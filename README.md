@@ -1,2 +1,2 @@
 # Spark
-My first LLM
+Figuring out local LLMs
