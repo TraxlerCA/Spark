@@ -1,12 +1,11 @@
-
 """
-This script sends prompts to a specified LLM model via Ollama's API and prints the result.
-It includes clear structure, type hints, and detailed comments for beginners.
+This script sends prompts to an LLM model via Ollama's API and prints the result.
+It follows best practices, includes clear structure and type hints, and adds ample comments for beginners.
 """
 
 import json
 import sys
-from typing import Optional
+from typing import Optional, List
 
 import requests
 from requests.exceptions import ConnectionError, HTTPError, Timeout
@@ -18,92 +17,94 @@ def ask_llm(
     port: int = 11434,
     model: str = "gemma3:4b",
     timeout: int = 10
-) -> Optional[str]:
+) -> str:
     """
     Send a prompt to an LLM model hosted on a local Ollama server.
 
     Args:
-        prompt: The text question or instruction to send.
-        host: The API host (default is localhost).
-        port: The API port (default is 11434).
-        model: The name of the Ollama model to query (e.g., "gemma3:4b").
-        timeout: Seconds to wait before timing out.
+        prompt: the text question or instruction to send
+        host: the API host (default localhost)
+        port: the API port (default 11434)
+        model: the name of the Ollama model to query
+        timeout: seconds to wait before timing out
 
     Returns:
-        The generated text response from the model, or None if an error occurs.
+        the generated text response from the model,
+        or an informative message if prompt is empty or an error occurs
     """
-    # construct the full API endpoint URL
+    # if user provides no prompt, give feedback immediately
+    if not prompt.strip():
+        return "No prompt provided. Please enter a valid prompt."
+
+    # construct full URL for the generate endpoint
     url = f"{host}:{port}/api/generate"
 
-    # prepare the JSON payload
+    # prepare JSON payload with model name and prompt
     payload = {
         "model": model,
         "prompt": prompt
     }
 
     try:
-        # use a session for better performance on multiple requests
+        # use a session for better performance if calling multiple times
         with requests.Session() as session:
-            response = session.post(url, json=payload, stream=True, timeout=timeout)
-            # raise exception for HTTP errors
+            response = session.post(
+                url,
+                json=payload,
+                stream=True,
+                timeout=timeout
+            )
+            # raise exception on HTTP error status codes (4xx, 5xx)
             response.raise_for_status()
     except ConnectionError:
-        print(
-            "Error: cannot connect to Ollama."
-            " Is the server running?"
-            " Try `ollama serve` in another terminal."
-        )
-        return None
+        return "Error: cannot connect to Ollama. Is the server running?"
     except Timeout:
-        print(
-            "Error: request to Ollama timed out."
-            " Is the model loaded and running?"
-        )
-        return None
+        return "Error: request to Ollama timed out. Is the model loaded and running?"
     except HTTPError:
-        print(f"Error: Ollama returned status code {response.status_code}.")
-        print("Details:", response.text)
-        return None
+        return (
+            f"Error: Ollama returned status code {response.status_code}. "
+            f"Details: {response.text}"
+        )
 
     # collect pieces of the streamed response
-    parts = []
+    parts: List[str] = []
     for chunk in response.iter_lines(decode_unicode=True):
+        # skip empty lines
         if not chunk:
             continue
 
         try:
             data = json.loads(chunk)
         except json.JSONDecodeError:
-            # skip lines that aren't valid JSON
+            # skip lines that are not valid JSON
             continue
 
-        # append any 'response' fields
-        if 'response' in data:
+        # if there's a 'response' field, add its text
+        if 'response' in data and isinstance(data['response'], str):
             parts.append(data['response'])
 
-    # join all parts into the final output
+    # join all parts into a final string
     return ''.join(parts)
 
 
 def main() -> None:
     """
-    Main entry point: prompt the user, call the API, and display the model's reply.
+    Entry point for the script:
+    1. prompt the user
+    2. send to LLM
+    3. display the reply
     """
-    # prompt the user for input
     try:
         user_input = input("Ask the LLM a question: ")
     except KeyboardInterrupt:
         print("\nGoodbye!")
         sys.exit(0)
 
-    # get the response from the model
+    # get model response (always a string)
     response_text = ask_llm(user_input)
 
-    # print the result or an error message
-    if response_text is not None:
-        print("\nModel says:\n", response_text)
-    else:
-        print("No response received.")
+    # print the model's output or error/default message
+    print("\nModel says:\n", response_text)
 
 
 if __name__ == "__main__":
