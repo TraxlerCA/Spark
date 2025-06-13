@@ -1,110 +1,129 @@
 """
-This script sends prompts to an LLM model via Ollama's API and prints the result.
-It follows best practices, includes clear structure and type hints, and adds ample comments for beginners.
+main.py – single-turn client for a local Ollama LLM.
+
+This script asks the user for a prompt, sends it to an Ollama instance
+running on localhost, and prints the model's response.
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import sys
-from typing import Optional, List
+from typing import List
 
 import requests
 from requests.exceptions import ConnectionError, HTTPError, Timeout
 
+# --------------------------------------------------------------------------- #
+# Configuration constants
+# --------------------------------------------------------------------------- #
 
+DEFAULT_HOST = "http://localhost"   # Ollama's REST server
+DEFAULT_PORT = 11434               # Default Ollama port
+DEFAULT_MODEL = "gemma3:4b"        # Model pulled earlier with `ollama pull`
+DEFAULT_TIMEOUT = 10               # Seconds to wait before we give up
+
+# Configure the root logger once, near the top of the file.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Helper functions
+# --------------------------------------------------------------------------- #
 def ask_llm(
     prompt: str,
-    host: str = "http://localhost",
-    port: int = 11434,
-    model: str = "gemma3:4b",
-    timeout: int = 10
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    model: str = DEFAULT_MODEL,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """
-    Send a prompt to an LLM model hosted on a local Ollama server.
+    Send a prompt to an LLM hosted by Ollama and return its response text.
+
+    The function never raises; all errors are caught and returned
+    as explanatory strings so the caller can decide what to do.
 
     Args:
-        prompt: the text question or instruction to send
-        host: the API host (default localhost)
-        port: the API port (default 11434)
-        model: the name of the Ollama model to query
-        timeout: seconds to wait before timing out
+        prompt: The question or instruction for the model.
+        host:   Base URL of the Ollama server.
+        port:   Listening port of the server.
+        model:  Model name (must have been pulled already).
+        timeout:Network timeout in seconds.
 
     Returns:
-        the generated text response from the model,
-        or an informative message if prompt is empty or an error occurs
+        A string with either the model's answer or an error message.
     """
-    # if user provides no prompt, give feedback immediately
-    if not prompt.strip():
-        return "No prompt provided. Please enter a valid prompt."
+    # ---------- validate input ----------
+    if not isinstance(prompt, str) or not prompt.strip():
+        return "Error: you must supply a non-empty prompt."
 
-    # construct full URL for the generate endpoint
+    # Limit length to something reasonable for a demo.
+    if len(prompt) > 8_000:
+        return "Error: prompt is too long (8 000 characters max)."
+
+    # ---------- build the request ----------
     url = f"{host}:{port}/api/generate"
+    payload = {"model": model, "prompt": prompt}
 
-    # prepare JSON payload with model name and prompt
-    payload = {
-        "model": model,
-        "prompt": prompt
-    }
-
+    # ---------- talk to Ollama ----------
     try:
-        # use a session for better performance if calling multiple times
         with requests.Session() as session:
+            logger.info("Sending request to Ollama…")
             response = session.post(
                 url,
                 json=payload,
-                stream=True,
-                timeout=timeout
+                stream=True,         # allows us to read the reply chunk by chunk
+                timeout=timeout,
             )
-            # raise exception on HTTP error status codes (4xx, 5xx)
-            response.raise_for_status()
+            response.raise_for_status()  # converts 4xx/5xx to HTTPError
     except ConnectionError:
         return "Error: cannot connect to Ollama. Is the server running?"
     except Timeout:
-        return "Error: request to Ollama timed out. Is the model loaded and running?"
-    except HTTPError:
-        return (
-            f"Error: Ollama returned status code {response.status_code}. "
-            f"Details: {response.text}"
-        )
+        return "Error: request to Ollama timed out. Is the model loaded?"
+    except HTTPError as exc:
+        return f"Error: Ollama returned {exc.response.status_code}."
 
-    # collect pieces of the streamed response
+    # ---------- stream and assemble the reply ----------
     parts: List[str] = []
-    for chunk in response.iter_lines(decode_unicode=True):
-        # skip empty lines
-        if not chunk:
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:                         # skip keep-alive lines
             continue
-
         try:
-            data = json.loads(chunk)
+            data = json.loads(line)
         except json.JSONDecodeError:
-            # skip lines that are not valid JSON
+            logger.warning("Skipping a non-JSON line in the stream.")
             continue
 
-        # if there's a 'response' field, add its text
-        if 'response' in data and isinstance(data['response'], str):
-            parts.append(data['response'])
+        text_piece = data.get("response")
+        if isinstance(text_piece, str):
+            parts.append(text_piece)
 
-    # join all parts into a final string
-    return ''.join(parts)
+    return "".join(parts)
 
 
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
 def main() -> None:
-    """
-    Entry point for the script:
-    1. prompt the user
-    2. send to LLM
-    3. display the reply
-    """
+    """Prompt the user once and display the model's reply."""
     try:
-        user_input = input("Ask the LLM a question: ")
+        user_prompt = input("Ask the LLM a question: ").strip()
     except KeyboardInterrupt:
-        print("\nGoodbye!")
-        sys.exit(0)
+        print("\nBye!")
+        return
 
-    # get model response (always a string)
-    response_text = ask_llm(user_input)
+    if not user_prompt:
+        logger.error("No prompt given. Abort.")
+        return
 
-    # print the model's output or error/default message
-    print("\nModel says:\n", response_text)
+    reply = ask_llm(user_prompt)
+    print("\nModel says:\n")
+    print(reply)
 
 
 if __name__ == "__main__":

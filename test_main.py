@@ -1,50 +1,48 @@
-
 """
-Unit tests for the ask_llm function from the main module.
-This script uses Python's built-in unittest framework and follows best practices
-for clarity and maintainability, making it accessible for beginners.
+test_main.py – basic tests for main.py.
+
+We mock the network call so that tests run instantly and do not depend
+on a live Ollama server.  Beginners can still run the real system test
+by commenting out the @patch line if they like.
 """
 
 import unittest
-from main import ask_llm
+from unittest.mock import patch
+
+import main
 
 
 class AskLLMTests(unittest.TestCase):
-    """Test suite for the ask_llm function."""
+    """Verify that ask_llm behaves and returns a string."""
 
-    def test_ask_llm_returns_string(self):
-        """
-        Test that ask_llm returns a non-empty string when given a simple prompt.
+    @patch("main.requests.Session.post")
+    def test_ask_llm_returns_string(self, mock_post):
+        # Arrange: craft a fake streaming response object
+        class FakeResponse:
+            def __init__(self):
+                self.status_code = 200
 
-        Steps:
-        1. Define a simple prompt.
-        2. Call ask_llm with the prompt.
-        3. Assert that the response is a string.
-        4. Assert that the string is not empty or just whitespace.
-        """
-        prompt = "Say hello!"
-        response = ask_llm(prompt)
+            def raise_for_status(self):
+                pass  # always OK
 
-        # Check that the response is of type str
-        self.assertIsInstance(response, str, "Response should be a string.")
+            # yield a couple of JSON chunks, then an empty line
+            def iter_lines(self, decode_unicode=True):
+                yield '{"response": "Hello"}'
+                yield '{"response": ", world!"}'
+                yield ""
 
-        # Check that the response is not empty or only whitespace
-        self.assertTrue(response.strip(), "Response should not be empty or whitespace.")
+        mock_post.return_value = FakeResponse()
 
-    def test_ask_llm_handles_empty_prompt(self):
-        """
-        Test that ask_llm handles an empty prompt gracefully.
+        # Act
+        reply = main.ask_llm("Say hello!")
 
-        Even if the prompt is empty, the function should still return a valid string response.
-        """
-        prompt = ""
-        response = ask_llm(prompt)
+        # Assert
+        self.assertIsInstance(reply, str)
+        self.assertEqual(reply, "Hello, world!")
 
-        # We still expect a string response, even for empty prompts
-        self.assertIsInstance(response, str, "Response should be a string even for an empty prompt.")
-        self.assertTrue(len(response) > 0, "Response should not be empty.")
+    def test_rejects_empty_prompt(self):
+        self.assertIn("Error:", main.ask_llm(""))
 
 
 if __name__ == "__main__":
-    # Run the tests with increased verbosity to see detailed output
-    unittest.main(verbosity=2)
+    unittest.main()
