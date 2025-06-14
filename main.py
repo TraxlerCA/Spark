@@ -1,129 +1,244 @@
+#
+# main.py
+#
+# Description: Single-turn client for a local Ollama LLM.
+#
 """
-main.py – single-turn client for a local Ollama LLM.
+This script provides a client to interact with a local Ollama LLM instance.
 
-This script asks the user for a prompt, sends it to an Ollama instance
-running on localhost, and prints the model's response.
+It handles sending a prompt to the Ollama API and streams the response back.
+Configuration is managed via environment variables and Pydantic settings.
+Error handling is managed through custom exceptions and structured logging.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import logging.config
 import sys
-from typing import List
+from typing import Any, Generator
 
 import requests
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------- #
-# Configuration constants
+# Constants & Configuration
 # --------------------------------------------------------------------------- #
 
-DEFAULT_HOST = "http://localhost"   # Ollama's REST server
-DEFAULT_PORT = 11434               # Default Ollama port
-DEFAULT_MODEL = "gemma3:4b"        # Model pulled earlier with `ollama pull`
-DEFAULT_TIMEOUT = 10               # Seconds to wait before we give up
+# Set up structured JSON logging
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "json",
+        },
+    },
+    "loggers": {
+        "__main__": {"handlers": ["stdout"], "level": "INFO", "propagate": True},
+        "ollama_client": {"handlers": ["stdout"], "level": "INFO", "propagate": True},
+    },
+}
 
-# Configure the root logger once, near the top of the file.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s: %(message)s",
-)
+logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
+# Maximum prompt length to avoid overly long requests in this example.
+MAX_PROMPT_LENGTH = 8_000
+
+
+class OllamaSettings(BaseSettings):
+    """Manages Ollama client configuration using Pydantic."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OLLAMA_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    host: str = "http://localhost"
+    port: int = 11434
+    model: str = "gemma3:4b"
+    timeout: int = 60
+
 
 # --------------------------------------------------------------------------- #
-# Helper functions
+# Custom Exceptions
 # --------------------------------------------------------------------------- #
-def ask_llm(
-    prompt: str,
-    host: str = DEFAULT_HOST,
-    port: int = DEFAULT_PORT,
-    model: str = DEFAULT_MODEL,
-    timeout: int = DEFAULT_TIMEOUT,
-) -> str:
+
+
+class OllamaClientError(Exception):
+    """Base exception for all Ollama client errors."""
+
+
+class OllamaConnectionError(OllamaClientError):
+    """Raised when the client cannot connect to the Ollama server."""
+
+
+class OllamaResponseError(OllamaClientError):
+    """Raised for non-2xx HTTP responses from the Ollama server."""
+
+
+class OllamaTimeoutError(OllamaClientError):
+    """Raised when a request to the Ollama server times out."""
+
+
+# --------------------------------------------------------------------------- #
+# Core Client Logic
+# --------------------------------------------------------------------------- #
+
+
+def ask_llm(prompt: str, settings: OllamaSettings | None = None) -> str:
     """
-    Send a prompt to an LLM hosted by Ollama and return its response text.
+    Sends a prompt to an Ollama LLM and returns the complete response.
 
-    The function never raises; all errors are caught and returned
-    as explanatory strings so the caller can decide what to do.
+    This function consolidates the streamed response into a single string.
 
     Args:
         prompt: The question or instruction for the model.
-        host:   Base URL of the Ollama server.
-        port:   Listening port of the server.
-        model:  Model name (must have been pulled already).
-        timeout:Network timeout in seconds.
+        settings: Configuration for the Ollama connection. Defaults to None,
+                  which initializes new settings.
 
     Returns:
-        A string with either the model's answer or an error message.
+        A string containing the model's complete answer.
+
+    Raises:
+        ValueError: If the prompt is empty or exceeds MAX_PROMPT_LENGTH.
     """
-    # ---------- validate input ----------
+    # Use default settings if none are provided
+    if settings is None:
+        settings = OllamaSettings()
+
+    # Consolidate the generator into a single string response
+    response_parts = list(stream_llm_response(prompt, settings))
+    return "".join(response_parts)
+
+
+def stream_llm_response(
+    prompt: str, settings: OllamaSettings | None = None
+) -> Generator[str, None, None]:
+    """
+    Sends a prompt to an Ollama LLM and streams the response.
+
+    This function yields response chunks as they are received from the API.
+
+    Args:
+        prompt: The question or instruction for the model.
+        settings: Configuration for the Ollama connection. Defaults to None,
+                  which initializes new settings.
+
+    Yields:
+        A generator of strings, where each string is a piece of the response.
+
+    Raises:
+        ValueError: If the prompt is empty or exceeds MAX_PROMPT_LENGTH.
+        OllamaConnectionError: If a connection to the server fails.
+        OllamaTimeoutError: If the request times out.
+        OllamaResponseError: If the server returns an HTTP error status or
+                             if the API signals an error in the stream.
+        OllamaClientError: For other client-side errors during the request.
+    """
+    # use default settings if none are provided
+    if settings is None:
+        settings = OllamaSettings()
+
+    # input validation
     if not isinstance(prompt, str) or not prompt.strip():
-        return "Error: you must supply a non-empty prompt."
+        raise ValueError("Prompt must be a non-empty string.")
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        raise ValueError(f"Prompt exceeds maximum length of {MAX_PROMPT_LENGTH} chars.")
 
-    # Limit length to something reasonable for a demo.
-    if len(prompt) > 8_000:
-        return "Error: prompt is too long (8 000 characters max)."
+    # build request
+    url = f"{settings.host.rstrip('/')}:{settings.port}/api/generate"
+    payload = {"model": settings.model, "prompt": prompt, "stream": True}
+    log_context = {"url": url, "model": settings.model}
 
-    # ---------- build the request ----------
-    url = f"{host}:{port}/api/generate"
-    payload = {"model": model, "prompt": prompt}
+    logger.info("Sending request to Ollama", extra=log_context)
 
-    # ---------- talk to Ollama ----------
+    # execute request and stream response
     try:
-        with requests.Session() as session:
-            logger.info("Sending request to Ollama…")
-            response = session.post(
-                url,
-                json=payload,
-                stream=True,         # allows us to read the reply chunk by chunk
-                timeout=timeout,
-            )
-            response.raise_for_status()  # converts 4xx/5xx to HTTPError
-    except ConnectionError:
-        return "Error: cannot connect to Ollama. Is the server running?"
-    except Timeout:
-        return "Error: request to Ollama timed out. Is the model loaded?"
-    except HTTPError as exc:
-        return f"Error: Ollama returned {exc.response.status_code}."
+        with requests.post(
+            url,
+            json=payload,
+            stream=True,
+            timeout=settings.timeout,
+        ) as response:
+            response.raise_for_status()
+            for raw in response.iter_lines(decode_unicode=True):
+                # skip empty lines
+                if not raw:
+                    continue
 
-    # ---------- stream and assemble the reply ----------
-    parts: List[str] = []
-    for line in response.iter_lines(decode_unicode=True):
-        if not line:                         # skip keep-alive lines
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            logger.warning("Skipping a non-JSON line in the stream.")
-            continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping non-JSON line in stream", extra={"line": raw})
+                    continue
 
-        text_piece = data.get("response")
-        if isinstance(text_piece, str):
-            parts.append(text_piece)
+                # if the API returned an error in the stream payload
+                if "error" in data:
+                    raise OllamaResponseError(data["error"])
 
-    return "".join(parts)
+                # yield only non-empty response chunks
+                chunk = data.get("response", "")
+                if chunk:
+                    yield chunk
+
+                # stop streaming when done is True
+                if data.get("done", False):
+                    break
+
+    except requests.exceptions.ConnectionError as e:
+        raise OllamaConnectionError(f"Connection to {url} failed.") from e
+    except requests.exceptions.Timeout as e:
+        raise OllamaTimeoutError("Request timed out. Is the model loaded?") from e
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code
+        raise OllamaResponseError(f"Ollama returned HTTP {status_code}.") from e
+    except requests.exceptions.RequestException as e:
+        raise OllamaClientError("An unexpected request error occurred.") from e
 
 
 # --------------------------------------------------------------------------- #
-# Entry point
+# Entry Point
 # --------------------------------------------------------------------------- #
+
+
 def main() -> None:
-    """Prompt the user once and display the model's reply."""
+    """Prompts the user once, sends the prompt to the LLM, and prints the reply."""
     try:
+        settings = OllamaSettings()
         user_prompt = input("Ask the LLM a question: ").strip()
-    except KeyboardInterrupt:
+
+        if not user_prompt:
+            logger.error("No prompt given. Aborting.")
+            return
+
+        print("\nModel says:\n")
+        # Stream the response directly to the console
+        for chunk in stream_llm_response(user_prompt, settings):
+            print(chunk, end="", flush=True)
+        print("\n")
+
+    except (KeyboardInterrupt, EOFError):
         print("\nBye!")
-        return
-
-    if not user_prompt:
-        logger.error("No prompt given. Abort.")
-        return
-
-    reply = ask_llm(user_prompt)
-    print("\nModel says:\n")
-    print(reply)
+    except (ValueError, OllamaClientError) as e:
+        logger.error("A client-side error occurred.", extra={"error": str(e)})
+        sys.exit(1)
+    except Exception as e:
+        logger.critical(
+            "An unexpected error occurred.",
+            extra={"error": str(e)},
+            exc_info=True,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
