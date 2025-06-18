@@ -6,3 +6,6 @@ rag/vectorstores/
 
 # Python cache files
 __pycache__/
+
+# Source documents
+source_documents/
