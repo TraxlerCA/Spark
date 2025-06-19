@@ -1,8 +1,7 @@
-#
 # chat.py
 #
-# Description: A multi-turn chat client for a local Ollama LLM.
-#
+# Description: a multi-turn chat client for a local Ollama LLM.
+
 """
 This script provides a simple, stateful command-line chat interface.
 
@@ -11,151 +10,152 @@ for interacting with the chat session (e.g., :help, :history, :exit).
 It uses the refactored `ask_llm` function for model interaction.
 """
 
-from __future__ import annotations
-
-import logging
-import sys
-from typing import Callable, Dict, List, TypedDict
+# --------------------------------------------------------------------------- #
+# imports
+# --------------------------------------------------------------------------- #
+from __future__ import annotations  # allow postponed evaluation of annotations
+import logging                       # for logging messages
+import sys                           # for system exit and module introspection
+from typing import Callable, Dict, List, TypedDict  # for type definitions
 
 try:
-    from main import OllamaClientError, ask_llm
+    from main import OllamaClientError, ask_llm  # import LLM client error and API call
 except ImportError:
-    print("Error: Could not import from 'main.py'. Make sure it's in the same directory.")
-    sys.exit(1)
+    print("Error: Could not import from 'main.py'. Make sure it's in the same directory.")  # notify missing dependency
+    sys.exit(1)  # exit if import fails
 
 # --------------------------------------------------------------------------- #
-# Constants and Type Definitions
+# constants and type definitions
 # --------------------------------------------------------------------------- #
+logger = logging.getLogger(__name__)  # module-level logger
 
-logger = logging.getLogger(__name__)
-
-ROLE_USER = "user"
-ROLE_ASSISTANT = "assistant"
-
+ROLE_USER = "user"            # identifier for user role in messages
+ROLE_ASSISTANT = "assistant"  # identifier for assistant role in messages
 
 class ChatMessage(TypedDict):
     """A structured dictionary representing one turn in a conversation."""
+    role: str     # typically ROLE_USER or ROLE_ASSISTANT
+    content: str  # the text content of the message
 
-    role: str  # Typically ROLE_USER or ROLE_ASSISTANT
-    content: str
-
-
-History = List[ChatMessage]
-CommandHandler = Callable[[History], None]
+History = List[ChatMessage]               # alias for conversation history type
+CommandHandler = Callable[[History], None]  # alias for command handler signature
 
 # --------------------------------------------------------------------------- #
-# Command Handlers
+# command handlers
 # --------------------------------------------------------------------------- #
-
-
 def handle_exit(history: History) -> None:
-    """Exits the chat application."""
-    print("Goodbye!")
-    sys.exit(0)
-
+    """Exit the chat application immediately.
+    
+    Args:
+        history: the conversation history (unused).
+    """
+    print("Goodbye!")  # inform user
+    sys.exit(0)        # terminate program
 
 def handle_help(history: History) -> None:
-    """Displays this help message."""
+    """Display available commands and their descriptions."""
     print("Available commands:")
     for cmd, (_, description) in COMMANDS.items():
-        print(f"  {cmd:<10} - {description}")
-
+        print(f"  {cmd:<10} - {description}")  # list each command
 
 def handle_history(history: History) -> None:
-    """Displays the conversation history."""
+    """Show the conversation history, if any."""
     if not history:
-        print("No messages in history yet.")
+        print("No messages in history yet.")  # nothing to show
         return
 
     print("\n--- Chat History ---")
     for turn in history:
         speaker = "You" if turn["role"] == ROLE_USER else "Assistant"
-        print(f"{speaker}: {turn['content']}")
+        print(f"{speaker}: {turn['content']}")  # display each turn
     print("--- End History ---\n")
 
-
 def handle_clear(history: History) -> None:
-    """Clears the current chat history."""
-    history.clear()
-    print("Chat history has been cleared.")
+    """Clear the current chat history."""
+    history.clear()  # remove all entries
+    print("Chat history has been cleared.")  # confirm action
 
-
-# --- Command Routing Table ---
+# --------------------------------------------------------------------------- #
+# command routing table
+# --------------------------------------------------------------------------- #
 COMMANDS: Dict[str, tuple[CommandHandler, str]] = {
-    ":exit": (handle_exit, "Exits the chat application."),
-    ":help": (handle_help, "Displays this help message."),
+    ":exit":    (handle_exit,    "Exits the chat application."),
+    ":help":    (handle_help,    "Displays this help message."),
     ":history": (handle_history, "Displays the conversation history."),
-    ":clear": (handle_clear, "Clears the current chat history."),
+    ":clear":   (handle_clear,   "Clears the current chat history."),
 }
 
-
 # --------------------------------------------------------------------------- #
-# Main Chat Application
+# main chat application class
 # --------------------------------------------------------------------------- #
-
-
 class ChatApplication:
     """Encapsulates the state and logic of the chat loop."""
 
     def __init__(self) -> None:
-        """Initializes the chat application with an empty history."""
-        self.history: History = []
-        logger.info("Chat application initialized.")
+        """Initialize with an empty history."""
+        self.history: History = []                      # store message sequence
+        logger.info("Chat application initialized.")     # log startup
 
     def run(self) -> None:
-        """Starts and manages the main chat loop."""
-        print("Welcome to Chat! Type ':help' for commands, or ':exit' to quit.\n")
+        """Start and manage the main chat loop."""
+        print("Welcome to Chat! Type ':help' for commands, or ':exit' to quit.\n")  # greeting
 
         while True:
             try:
-                user_input = input("You: ").strip()
+                user_input = input("You: ").strip()  # get and trim user input
                 if not user_input:
-                    continue
+                    continue  # skip empty entries
 
-                command = user_input.lower()
-                entry = COMMANDS.get(command)
+                command = user_input.lower()          # normalize for lookup
+                entry = COMMANDS.get(command)         # check for special command
                 if entry:
-                    handler_fn, _ = entry
-                    # call the current handler function to respect patches
+                    handler_fn, _ = entry             # extract handler function
+                    # call handler dynamically to allow patching:
+                    # - retrieve current function object
+                    # - execute with conversation history
                     handler = getattr(sys.modules[__name__], handler_fn.__name__)
                     handler(self.history)
                 else:
-                    self.process_message(user_input)
+                    self.process_message(user_input)  # handle regular message
 
             except (KeyboardInterrupt, EOFError):
-                handle_exit(self.history)
+                handle_exit(self.history)  # exit cleanly on interrupt
 
     def process_message(self, text: str) -> None:
         """
-        Processes a regular user message, gets a reply, and updates history.
+        Process a user message: send to LLM, handle response, update history.
 
         Args:
-            text: The user's message content.
+            text: the user's message content.
         """
-        # Add user message to history
+        # add user message to history
         self.history.append({"role": ROLE_USER, "content": text})
 
         try:
-            print("Assistant: ", end="", flush=True)
-            reply = ask_llm(text)
-            print(reply)
+            print("Assistant: ", end="", flush=True)  # prepare reply prompt
+            reply = ask_llm(text)                     # call the LLM API
+            print(reply)                              # display the assistant response
 
-            # Add assistant response to history
+            # record assistant response in history
             self.history.append({"role": ROLE_ASSISTANT, "content": reply})
 
         except Exception as e:
+            # - build error message including exception details
+            # - notify user of failure
+            # - log full error for debugging
+            # - revert last history entry to maintain consistency
             error_message = f"Error: Could not get a response from the LLM. {e}"
-            print(f"\n[SYSTEM] {error_message}")
-            logger.error("LLM error during chat loop.", extra={"error": str(e)})
-            # Remove the user's last message if the call failed
-            self.history.pop()
+            print(f"\n[SYSTEM] {error_message}")  # inform user
+            logger.error("LLM error during chat loop.", extra={"error": str(e)})  # log error
+            self.history.pop()  # remove failed user entry
 
-
+# --------------------------------------------------------------------------- #
+# entry point
+# --------------------------------------------------------------------------- #
 def main() -> None:
     """Entry point for the chat application."""
-    app = ChatApplication()
-    app.run()
-
+    app = ChatApplication()  # create chat app instance
+    app.run()                # start chat loop
 
 if __name__ == "__main__":
-    main()
+    main()  # run when executed as a script
