@@ -16,7 +16,8 @@ class TestFormatPrompt(unittest.TestCase):
     def test_empty_history_default_system(self):
         """When history is empty, prompt should include only system, user, and assistant tags."""
         prompt = format_prompt([], "Hello")
-        lines = prompt.splitlines()
+        # format_prompt uses literal "\n" as separator, so split on that
+        lines = prompt.split("\\n")
         self.assertEqual(lines[0], f"{ROLE_SYSTEM}: {DEFAULT_SYSTEM_PROMPT}")
         self.assertEqual(lines[1], f"{ROLE_USER}: Hello")
         self.assertEqual(lines[2], f"{ROLE_ASSISTANT}:")
@@ -33,7 +34,8 @@ class TestFormatPrompt(unittest.TestCase):
         ]
         # use max_turns=5 → include only last 10 history entries
         prompt = format_prompt(hist, "New", system_prompt="SYS", max_turns=5)
-        lines = prompt.splitlines()
+        # history is joined with literal "\n", so split on that
+        lines = prompt.split("\\n")
 
         # first line is our custom system prompt
         self.assertEqual(lines[0], "system: SYS")
