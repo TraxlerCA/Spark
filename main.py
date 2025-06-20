@@ -156,7 +156,7 @@ def extract_sources(nodes) -> Set[str]:
 # --------------------------------------------------------------------------- #
 # entry point
 # --------------------------------------------------------------------------- #
-@typer.run
+
 def main() -> None:
     """
     Prompts the user for a question, optionally retrieves RAG context,
@@ -237,3 +237,8 @@ def main() -> None:
             "An unexpected error occurred", extra={"error": str(e)}, exc_info=True
         )
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    import typer
+    typer.run(main)
