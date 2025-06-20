@@ -71,7 +71,7 @@ class AppConfig(BaseSettings):
 
     # --- Ollama LLM Settings ---
     ollama_host: str = Field(
-        default="<http://localhost>",
+        default="http://localhost",
         description="Ollama server host URL."
     )
     ollama_port: int = Field(
@@ -79,7 +79,7 @@ class AppConfig(BaseSettings):
         description="Ollama server port."
     )
     ollama_model: str = Field(
-        default="gemma2:9b",
+        default="gemma3:4b",
         description="Default Ollama model name to use for generation."
     )
     ollama_timeout: int = Field(
