@@ -3,6 +3,7 @@ venv/
 
 # ChromaDB vectorstore data
 rag/vectorstores/
+rag/ingestion_log.json
 
 # Python cache files
 __pycache__/

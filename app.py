@@ -1,286 +1,215 @@
 # app.py
 #
-# Description: Streamlit chat interface with history, model & system-prompt settings,
-#              markdown rendering, timestamps, spinner, prompt-length indicator,
-#              automatic scroll, and chat export for a local Ollama LLM.
-#
+# Streamlit interface for your local RAG-enabled assistant.
+# Keeps the CLI’s score filtering, shows a concise “sources” footer,
+# and avoids the duplicate-bubble issue by streaming in a plain placeholder.
 
 # --------------------------------------------------------------------------- #
 # imports
 # --------------------------------------------------------------------------- #
-from __future__ import annotations  # enable postponed evaluation of annotations
-import logging                     # for structured logging
-import json                        # to serialize logs and chat history
-from typing import Any, Dict, List  # for type hints on data structures
-from datetime import datetime      # for timestamping chat messages
+from __future__ import annotations
+import json
+import logging
+import sys
+from datetime import datetime
+from typing import Any, List
 
-import streamlit as st             # for building the Streamlit web app
-from pydantic_settings import BaseSettings  # for environment-based configuration
-from pydantic import Field, ValidationError  # for settings fields and validation
+import streamlit as st
+import chromadb
 
-from history_utils import format_prompt, ROLE_USER, ROLE_ASSISTANT  # for formatting dialogue history
-from main import stream_llm_response, OllamaSettings  # for streaming LLM responses and model settings
+from config import settings
+from history_utils import (
+    format_prompt, ROLE_USER, ROLE_ASSISTANT, ChatMessage,
+    DEFAULT_SYSTEM_PROMPT
+)
+from main import (
+    stream_llm_response,
+    ABS_MIN_SCORE,
+    REL_WINDOW,
+    extract_sources,
+)
+
+# --------------------------------------------------------------------------- #
+# optional RAG integration
+# --------------------------------------------------------------------------- #
+try:
+    from rag.retriever import retrieve, format_context
+    RAG_AVAILABLE = True
+except (ImportError, FileNotFoundError):
+    RAG_AVAILABLE = False
 
 # --------------------------------------------------------------------------- #
 # constants
 # --------------------------------------------------------------------------- #
-SESSION_KEY_HISTORY = "history"         # session_state key for storing chat history
-SESSION_KEY_MODEL = "model"             # session_state key for the selected model
-SESSION_KEY_SYSTEM_PROMPT = "system_prompt"  # session_state key for the system prompt
-MODEL_OPTIONS = ["gemma3:4b", "deepseek-r1:latest"]  # available LLM model options
+SESSION_KEY_HISTORY = "history"
+SESSION_KEY_MODEL = "model"
+SESSION_KEY_SYSTEM_PROMPT = "system_prompt"
+SESSION_KEY_USE_RAG = "use_rag"
+MODEL_OPTIONS: list[str] = ["gemma3:4b", "deepseek-r1:latest"]
 
 # --------------------------------------------------------------------------- #
 # logger setup
 # --------------------------------------------------------------------------- #
-logger = logging.getLogger(__name__)     # create module-level logger
-handler = logging.StreamHandler()        # log to standard output stream
-formatter = logging.Formatter("%(message)s")  # simple message-only format
-handler.setFormatter(formatter)          # apply formatter to handler
-logger.addHandler(handler)               # attach handler to logger
-logger.setLevel(logging.INFO)            # set default log level
+class JSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JSONFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 # --------------------------------------------------------------------------- #
-# settings
+# helpers
 # --------------------------------------------------------------------------- #
-class AppSettings(BaseSettings):
-    """
-    load application settings from environment variables.
-
-    Args:
-        model (str): default model name to use for chat.
-
-    Returns:
-        AppSettings: populated settings instance.
-    """
-    model: str = Field(
-        "gemma3:4b", 
-        description="default model name"
-    )  # default LLM model
-
-    class Config:
-        # prefix for environment vars (e.g., APP_MODEL)
-        env_prefix = "APP_"
-        env_file = ".env"                    # file to load environment variables from
-        env_file_encoding = "utf-8"          # encoding for the env file
-
-class ChatError(Exception):
-    """exception type for errors during chat processing."""
-
-@st.cache_data  # cache settings to avoid reloading on each rerun
-def get_settings() -> AppSettings:
-    """
-    load application settings from environment variables with validation.
-
-    Returns:
-        AppSettings: validated settings object.
-
-    Raises:
-        ChatError: if settings validation fails.
-    """
+@st.cache_resource
+def check_vector_store_exists() -> bool:
+    if not settings.persist_dir.exists():
+        return False
     try:
-        return AppSettings()
-    except ValidationError as e:
-        # log invalid settings error details
-        logger.error(json.dumps({
-            "event": "invalid_settings", 
-            "errors": e.errors()
-        }))
-        raise ChatError("invalid application settings") from e
+        client = chromadb.PersistentClient(path=str(settings.persist_dir))
+        collection = client.get_collection(settings.collection)
+        return collection.count() > 0
+    except Exception:
+        return False
 
-# --------------------------------------------------------------------------- #
-# session-state initialization
-# --------------------------------------------------------------------------- #
 def init_session_state() -> None:
-    """
-    initialize session state keys for history, model, and system prompt.
-
-    Ensures:
-        - history list exists
-        - model defaults to settings.model
-        - system_prompt has a default instructional message
-    """
     if SESSION_KEY_HISTORY not in st.session_state:
-        st.session_state[SESSION_KEY_HISTORY] = []  # type: List[Dict[str, Any]]
+        st.session_state[SESSION_KEY_HISTORY] = []
     if SESSION_KEY_MODEL not in st.session_state:
-        st.session_state[SESSION_KEY_MODEL] = get_settings().model
+        st.session_state[SESSION_KEY_MODEL] = settings.ollama_model
     if SESSION_KEY_SYSTEM_PROMPT not in st.session_state:
-        st.session_state[SESSION_KEY_SYSTEM_PROMPT] = (
-            "You are a helpful AI assistant. Use the conversation history to answer user questions."
-        )
+        st.session_state[SESSION_KEY_SYSTEM_PROMPT] = DEFAULT_SYSTEM_PROMPT
+    if SESSION_KEY_USE_RAG not in st.session_state:
+        st.session_state[SESSION_KEY_USE_RAG] = RAG_AVAILABLE
 
 # --------------------------------------------------------------------------- #
-# sidebar UI
+# sidebar
 # --------------------------------------------------------------------------- #
 def render_sidebar() -> None:
-    """
-    render the application sidebar with settings controls.
-
-    Components:
-      - model selector for choosing the LLM
-      - text area for editing the system prompt
-      - button to reset chat history
-      - download button to export chat as JSON
-    """
     with st.sidebar:
-        st.title("Settings")  # sidebar title
+        st.title("Settings")
+        if RAG_AVAILABLE:
+            st.checkbox("⚡ use RAG context", key=SESSION_KEY_USE_RAG)
+        else:
+            st.warning("RAG not available. Ingest data first.", icon="⚠️")
 
-        # model selector: choose from predefined MODEL_OPTIONS
-        idx = (
-            MODEL_OPTIONS.index(st.session_state[SESSION_KEY_MODEL])
-            if st.session_state[SESSION_KEY_MODEL] in MODEL_OPTIONS
-            else 0
-        )
-        st.selectbox(
-            "Choose model",
-            options=MODEL_OPTIONS,
-            index=idx,
-            key=SESSION_KEY_MODEL,
-        )
+        st.selectbox("choose model", MODEL_OPTIONS, key=SESSION_KEY_MODEL)
+        st.text_area("system prompt", key=SESSION_KEY_SYSTEM_PROMPT, height=100)
 
-        # system prompt editor
-        st.subheader("System prompt")
-        st.session_state[SESSION_KEY_SYSTEM_PROMPT] = st.text_area(
-            "Edit system prompt:",
-            value=st.session_state[SESSION_KEY_SYSTEM_PROMPT],
-            height=100,
-        )
-
-        # reset chat button: clear history and log event
-        if st.button("🔄 Reset chat"):
+        if st.button("🔄 reset chat"):
             st.session_state[SESSION_KEY_HISTORY] = []
-            logger.info(json.dumps({"event": "chat_reset"}))
+            st.rerun()
 
-        # export chat: prepare JSON payload for download
-        payload = json.dumps(
-            st.session_state[SESSION_KEY_HISTORY], 
-            indent=2
-        )
-        st.download_button(
-            "💾 Download chat JSON",
-            data=payload,
-            file_name="chat_history.json",
-            mime="application/json",
-        )
-
-# --------------------------------------------------------------------------- #
-# input sanitization
-# --------------------------------------------------------------------------- #
-def sanitize_input(user_text: str) -> str:
-    """
-    sanitize user input by trimming leading and trailing whitespace.
-
-    Args:
-        user_text (str): raw text input from the user.
-
-    Returns:
-        str: sanitized text.
-    """
-    return user_text.strip()
+        payload = json.dumps(st.session_state[SESSION_KEY_HISTORY], indent=2)
+        st.download_button("💾 download chat", payload, file_name="chat_history.json")
 
 # --------------------------------------------------------------------------- #
 # main chat logic
 # --------------------------------------------------------------------------- #
 def run_chat() -> None:
-    """
-    render chat interface, process user input, stream assistant responses, and update session history.
+    st.header("💬 Chat with your AI assistant")
 
-    Workflow:
-      1. display existing chat history with timestamps
-      2. receive new user message
-      3. append user message to history
-      4. build LLM prompt including custom system prompt
-      5. show prompt length indicator
-      6. configure and invoke Ollama LLM for response
-      7. stream response chunks live to the UI
-      8. append assistant response and rerun for scrolling
-    """
-    st.header("💬 Chat with Spark (local)")  # main header
-
-    # display previous chat turns
+    # display history
     for turn in st.session_state[SESSION_KEY_HISTORY]:
         role = "user" if turn["role"] == ROLE_USER else "assistant"
-        content = turn["content"]
-        ts = turn.get("timestamp")
-        if ts:
-            formatted = f"{content}\n\n<sub>{ts}</sub>"
-        else:
-            formatted = content
+        content, ts = turn["content"], turn.get("timestamp")
+        formatted = f"{content}\n\n<sub>{ts}</sub>" if ts else content
         st.chat_message(role).markdown(formatted, unsafe_allow_html=True)
 
-    # receive user input
-    user_input = st.chat_input("You:")
-    if not user_input:
+    # user input
+    if not (user_input := st.chat_input("Ask a question...")):
         return
 
-    # sanitize and record user message with timestamp
-    content = sanitize_input(user_input)
+    content = user_input.strip()
     ts_user = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state[SESSION_KEY_HISTORY].append({
-        "role": ROLE_USER,
-        "content": content,
-        "timestamp": ts_user,
-    })
-    st.chat_message("user").markdown(
-        f"{content}\n\n<sub>{ts_user}</sub>",
-        unsafe_allow_html=True,
+    st.session_state[SESSION_KEY_HISTORY].append(
+        ChatMessage(role=ROLE_USER, content=content, timestamp=ts_user)
     )
+    st.chat_message("user").markdown(f"{content}\n\n<sub>{ts_user}</sub>", unsafe_allow_html=True)
 
-    # construct prompt for LLM using history and system prompt
+    # retrieve context
+    rag_context = ""
+    retrieved_nodes: List[Any] = []
+    if st.session_state[SESSION_KEY_USE_RAG] and RAG_AVAILABLE:
+        with st.spinner("searching documents…"):
+            try:
+                nodes = retrieve(content, k=settings.similarity_top_k)
+                good: List[Any] = []
+                if nodes:
+                    top = nodes[0].score
+                    if top >= ABS_MIN_SCORE:
+                        good.append(nodes[0])
+                        for n in nodes[1:]:
+                            if n.score >= max(ABS_MIN_SCORE, top - REL_WINDOW):
+                                good.append(n)
+                retrieved_nodes = good
+                rag_context = format_context(good) if good else ""
+            except Exception as e:
+                logger.error("RAG retrieval error", exc_info=e)
+                st.error(f"RAG error: {e}")
+
+    # build prompt
     prompt = format_prompt(
-        history=st.session_state[SESSION_KEY_HISTORY],
+        history=st.session_state[SESSION_KEY_HISTORY][:-1],
         next_user_message=content,
         system_prompt=st.session_state[SESSION_KEY_SYSTEM_PROMPT],
+        rag_context=rag_context,
     )
+    st.caption(f"prompt length: {len(prompt)} characters")
 
-    # show prompt-length indicator for user feedback
-    st.caption(f"Prompt length: {len(prompt)} characters")
+    # stream answer in a placeholder (avoids duplicate bubbles)
+    placeholder = st.empty()
+    full_response = ""
+    with st.spinner("assistant is thinking…"):
+        for chunk in stream_llm_response(prompt):
+            full_response += chunk
+            placeholder.markdown(f"{full_response} ▌")
 
-    # configure Ollama settings with selected model
-    settings = OllamaSettings()
-    settings.model = st.session_state[SESSION_KEY_MODEL]
+    # provenance footer
+    if retrieved_nodes:
+        src_files = sorted(extract_sources(retrieved_nodes))
+        provenance = f"\n\n<sub>📚 sources: {', '.join(src_files)}</sub>"
+    else:
+        provenance = "\n\n<sub>📚 sources: none (model knowledge)</sub>"
 
-    # stream assistant response with live updates
-    with st.chat_message("assistant"):
-        placeholder = st.empty()  # placeholder for streaming text
-        response_text = ""
-        try:
-            with st.spinner("Spark thinks..."):
-                # iterate and render each chunk from LLM
-                for chunk in stream_llm_response(prompt, settings):
-                    response_text += chunk
-                    placeholder.markdown(response_text, unsafe_allow_html=True)
-        except Exception as e:
-            error_info: Dict[str, Any] = {
-                "event": "stream_error",
-                "error": str(e),
-            }
-            # log stream error details
-            logger.error(json.dumps(error_info))
-            # inform user of failure
-            st.error("Error getting response, please try again later")
-            raise ChatError("failed to get response") from e
-        else:
-            # record assistant response with timestamp
-            ts_assistant = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state[SESSION_KEY_HISTORY].append({
-                "role": ROLE_ASSISTANT,
-                "content": response_text,
-                "timestamp": ts_assistant,
-            })
+    full_response += provenance
+    placeholder.markdown(full_response)  # final render
 
-    # automatically rerun app to scroll chat to bottom
+    # save assistant turn and rerun
+    ts_assistant = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state[SESSION_KEY_HISTORY].append(
+        ChatMessage(role=ROLE_ASSISTANT, content=full_response, timestamp=ts_assistant)
+    )
     st.rerun()
 
 # --------------------------------------------------------------------------- #
-# application entry point
+# entry point
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    """
-    entry point for Streamlit app; initialize state, render sidebar, and start chat.
-    """
+    st.set_page_config(page_title="local AI assistant", layout="wide")
+
+    if not check_vector_store_exists():
+        st.warning(
+            "vector store is not initialised or empty. "
+            "run `python ingest.py` first.",
+            icon="⚠️",
+        )
+        st.stop()
+
     init_session_state()
     render_sidebar()
     run_chat()
+
 
 if __name__ == "__main__":
     main()
