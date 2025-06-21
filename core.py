@@ -16,10 +16,15 @@ try:
 except ImportError:
     RAG_ENABLED = False
 
-# Define dummy types/functions for type-checking if RAG is disabled
-class NodeWithScore: pass
-def retrieve(*args, **kwargs) -> List[NodeWithScore]: return []
-def format_context(*args, **kwargs) -> str: return ""
+    # fallback stubs – only defined if the import really failed
+    class NodeWithScore:  # type: ignore
+        pass
+
+    def retrieve(*args, **kwargs) -> List[NodeWithScore]:  # type: ignore
+        return []
+
+    def format_context(*args, **kwargs) -> str:  # type: ignore
+        return ""
 
 logger = logging.getLogger(__name__)
 # Centralized RAG filtering parameters
