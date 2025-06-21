@@ -10,16 +10,13 @@
 # imports
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
-import json
 import logging
 import logging.config
 import os
 import sys
-from typing import Any, Dict, Generator, Set
-
-import requests
 import typer
 
+from llm_client import stream_llm_response, OllamaClientError
 # Import the centralized configuration
 from config import settings
 # Import the unified prompt formatter
@@ -76,75 +73,10 @@ LOGGING_CONFIG: Dict[str, Any] = {
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------------- #
-# custom exceptions
-# --------------------------------------------------------------------------- #
-class OllamaClientError(Exception):
-    """Base exception for Ollama client errors."""
-
-
-class OllamaConnectionError(OllamaClientError):
-    """Raised for connection failures to the Ollama server."""
-
-
-class OllamaResponseError(OllamaClientError):
-    """Raised when Ollama returns an error response."""
-
-
-class OllamaTimeoutError(OllamaClientError):
-    """Raised when a request to Ollama times out."""
-
 
 # --------------------------------------------------------------------------- #
 # helper functions
 # --------------------------------------------------------------------------- #
-def stream_llm_response(prompt: str) -> Generator[str, None, None]:
-    """
-    Streams token chunks from the LLM server for a given prompt.
-    """
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("Prompt must be a non-empty string.")
-    if len(prompt) > MAX_PROMPT_LENGTH:
-        raise ValueError(f"Prompt exceeds max length of {MAX_PROMPT_LENGTH} chars.")
-
-    url = f"{settings.ollama_host.rstrip('/')}:{settings.ollama_port}/api/generate"
-    payload = {"model": settings.ollama_model, "prompt": prompt, "stream": True}
-    logger.info(
-        "Sending request to Ollama",
-        extra={"url": url, "model": settings.ollama_model},
-    )
-
-    try:
-        with requests.post(
-            url, json=payload, stream=True, timeout=settings.ollama_timeout
-        ) as response:
-            response.raise_for_status()
-            for raw in response.iter_lines(decode_unicode=True):
-                if not raw:
-                    continue
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("Skipping non-JSON line in stream", extra={"line": raw})
-                    continue
-                if "error" in data:
-                    raise OllamaResponseError(data["error"])
-                chunk = data.get("response", "")
-                if chunk:
-                    yield chunk
-                if data.get("done", False):
-                    break
-    except requests.exceptions.ConnectionError as e:
-        raise OllamaConnectionError(f"Connection to {url} failed.") from e
-    except requests.exceptions.Timeout as e:
-        raise OllamaTimeoutError("Request timed out.") from e
-    except requests.exceptions.HTTPError as e:
-        raise OllamaResponseError(
-            f"Ollama returned HTTP {e.response.status_code}."
-        ) from e
-    except requests.exceptions.RequestException as e:
-        raise OllamaClientError("An unexpected request error occurred.") from e
-
 
 def extract_sources(nodes) -> Set[str]:
     """

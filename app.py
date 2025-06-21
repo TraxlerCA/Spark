@@ -22,12 +22,9 @@ from history_utils import (
     format_prompt, ROLE_USER, ROLE_ASSISTANT, ChatMessage,
     DEFAULT_SYSTEM_PROMPT
 )
-from main import (
-    stream_llm_response,
-    ABS_MIN_SCORE,
-    REL_WINDOW,
-    extract_sources,
-)
+
+from llm_client import stream_llm_response
+from main import ABS_MIN_SCORE, REL_WINDOW, extract_sources  # Keep these for now
 
 # --------------------------------------------------------------------------- #
 # optional RAG integration
