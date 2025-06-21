@@ -45,16 +45,14 @@ def format_prompt(
 ) -> str:
     """
     Builds a single, comprehensive prompt string for the LLM.
-
     It combines:
     - A system prompt.
     - Recent conversation history.
     - Retrieved RAG context (if available).
     - An instruction for how to use the context.
-    - The user's latest question.
-
+    - The user's latest question (safely wrapped).
     Returns:
-        A fully formatted prompt string ready for the LLM.
+    A fully formatted prompt string ready for the LLM.
     """
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     parts: list[str] = [f"{ROLE_SYSTEM}: {system_prompt}"]
@@ -63,6 +61,9 @@ def format_prompt(
     start_index = max(0, len(history) - max_turns * 2)
     for msg in history[start_index:]:
         parts.append(f"{msg['role']}: {msg['content']}")
+
+    # Sanitize the user message by wrapping it in a tag.
+    safe_user_message = f"<user_question>{next_user_message}</user_question>"
 
     # Inject RAG context if it's provided and meaningful
     if rag_context and rag_context.strip() and rag_context != "No context found.":
@@ -73,14 +74,14 @@ def format_prompt(
             "could not find an answer in the provided documents."
         )
         combined = (
-            f"{instruction}\\n\\n### Context:\\n{rag_context}\\n\\n"
-            f"### User Question:\\n{next_user_message}"
+            f"{instruction}\n\n### Context:\n{rag_context}\n\n"
+            f"### User Question:\n{safe_user_message}"
         )
         parts.append(f"{ROLE_USER}: {combined}")
     else:
         # If no RAG context, just append the user message
-        parts.append(f"{ROLE_USER}: {next_user_message}")
+        parts.append(f"{ROLE_USER}: {safe_user_message}")
 
     # Final part tells the LLM to begin its response
     parts.append(f"{ROLE_ASSISTANT}:")
-    return "\\n".join(parts)
+    return "\n".join(parts)

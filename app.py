@@ -13,6 +13,7 @@ import logging
 import sys
 from datetime import datetime
 from typing import Any, List
+from core import process_query
 
 import streamlit as st
 import chromadb
@@ -116,78 +117,61 @@ def render_sidebar() -> None:
 def run_chat() -> None:
     st.header("💬 Chat with your AI assistant")
 
-    # display history
+    # Display history
     for turn in st.session_state[SESSION_KEY_HISTORY]:
         role = "user" if turn["role"] == ROLE_USER else "assistant"
-        content, ts = turn["content"], turn.get("timestamp")
-        formatted = f"{content}\n\n<sub>{ts}</sub>" if ts else content
-        st.chat_message(role).markdown(formatted, unsafe_allow_html=True)
+        st.chat_message(role).markdown(turn["content"], unsafe_allow_html=True)
 
-    # user input
+    # User input
     if not (user_input := st.chat_input("Ask a question...")):
         return
 
     content = user_input.strip()
     ts_user = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user_message_content = f"{content}\n\n<sub>{ts_user}</sub>"
+
     st.session_state[SESSION_KEY_HISTORY].append(
-        ChatMessage(role=ROLE_USER, content=content, timestamp=ts_user)
+        ChatMessage(role=ROLE_USER, content=user_message_content)
     )
-    st.chat_message("user").markdown(f"{content}\n\n<sub>{ts_user}</sub>", unsafe_allow_html=True)
+    st.chat_message("user").markdown(user_message_content, unsafe_allow_html=True)
 
-    # retrieve context
-    rag_context = ""
-    retrieved_nodes: List[Any] = []
-    if st.session_state[SESSION_KEY_USE_RAG] and RAG_AVAILABLE:
-        with st.spinner("searching documents…"):
-            try:
-                nodes = retrieve(content, k=settings.similarity_top_k)
-                good: List[Any] = []
-                if nodes:
-                    top = nodes[0].score
-                    if top >= ABS_MIN_SCORE:
-                        good.append(nodes[0])
-                        for n in nodes[1:]:
-                            if n.score >= max(ABS_MIN_SCORE, top - REL_WINDOW):
-                                good.append(n)
-                retrieved_nodes = good
-                rag_context = format_context(good) if good else ""
-            except Exception as e:
-                logger.error("RAG retrieval error", exc_info=e)
-                st.error(f"RAG error: {e}")
+    # Call the core processing logic
+    with st.spinner("assistant is thinking…"):
+        response_generator, sources = process_query(
+            user_prompt=content,
+            history=st.session_state[SESSION_KEY_HISTORY][:-1],  # Exclude current prompt
+            use_rag=st.session_state[SESSION_KEY_USE_RAG],
+            system_prompt=st.session_state[SESSION_KEY_SYSTEM_PROMPT],
+            model=st.session_state[SESSION_KEY_MODEL],
+        )
 
-    # build prompt
-    prompt = format_prompt(
-        history=st.session_state[SESSION_KEY_HISTORY][:-1],
-        next_user_message=content,
-        system_prompt=st.session_state[SESSION_KEY_SYSTEM_PROMPT],
-        rag_context=rag_context,
-    )
-    st.caption(f"prompt length: {len(prompt)} characters")
-
-    # stream answer in a placeholder (avoids duplicate bubbles)
+    # Stream answer in a placeholder
     placeholder = st.empty()
     full_response = ""
-    with st.spinner("assistant is thinking…"):
-        for chunk in stream_llm_response(prompt):
-            full_response += chunk
-            placeholder.markdown(f"{full_response} ▌")
+    for chunk in response_generator:
+        full_response += chunk
+        placeholder.markdown(f"{full_response} ▌")
 
-    # provenance footer
-    if retrieved_nodes:
-        src_files = sorted(extract_sources(retrieved_nodes))
-        provenance = f"\n\n<sub>📚 sources: {', '.join(src_files)}</sub>"
+    # Add provenance footer
+    if sources:
+        provenance = f"\n\n<sub>📚 sources: {', '.join(sorted(sources))}</sub>"
     else:
         provenance = "\n\n<sub>📚 sources: none (model knowledge)</sub>"
 
-    full_response += provenance
-    placeholder.markdown(full_response)  # final render
+    full_response_with_footer = full_response + provenance
+    placeholder.markdown(full_response_with_footer, unsafe_allow_html=True)
 
-    # save assistant turn and rerun
+    # Save assistant turn
     ts_assistant = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    assistant_message_content = f"{full_response}\n\n<sub>{ts_assistant}{provenance}</sub>"
+
+    # Display the final assistant message
+    placeholder.markdown(assistant_message_content, unsafe_allow_html=True)
+
+    # Store just the string in history (so it can be JSON-serialized)
     st.session_state[SESSION_KEY_HISTORY].append(
-        ChatMessage(role=ROLE_ASSISTANT, content=full_response, timestamp=ts_assistant)
+        ChatMessage(role=ROLE_ASSISTANT, content=assistant_message_content)
     )
-    st.rerun()
 
 # --------------------------------------------------------------------------- #
 # entry point

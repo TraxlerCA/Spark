@@ -16,11 +16,10 @@ import os
 import sys
 import typer
 
-from llm_client import stream_llm_response, OllamaClientError
-# Import the centralized configuration
+import typer
 from config import settings
-# Import the unified prompt formatter
-from history_utils import format_prompt
+from llm_client import OllamaClientError   # We only need the exception here
+from core import process_query             # The most important new import
 
 # --------------------------------------------------------------------------- #
 # optional RAG integration
@@ -91,68 +90,31 @@ def extract_sources(nodes) -> Set[str]:
 
 def main() -> None:
     """
-    Prompts the user for a question, optionally retrieves RAG context,
-    formats a complete prompt, and streams the model's response to the console.
+    Prompts the user for a question, processes it via the core engine,
+    and streams the model's response to the console.
     """
     try:
+        # We are not managing history in this simple CLI client
+        history = []
         user_prompt = input("Ask the LLM a question: ").strip()
         if not user_prompt:
             logger.error("No prompt given; aborting.")
             return
 
-        rag_context = ""
-        sources: Set[str] = set()
         use_rag_requested = os.getenv("USE_RAG", "1") == "1"
 
-        if use_rag_requested and RAG_ENABLED:
-            logger.info("RAG is enabled; retrieving context...")
-            try:
-                nodes = retrieve(user_prompt, k=settings.similarity_top_k)
-
-                 # DEBUG: show scores returned by the retriever
-                for n in nodes:
-                    print(f"{n.score:.4f}  {n.metadata.get('file_name', 'unknown')}")
-
-                good_nodes = []
-                if nodes:
-                    top_score = nodes[0].score
-                    if top_score >= ABS_MIN_SCORE:
-                        good_nodes.append(nodes[0])
-
-                        for n in nodes[1:]:
-                            if n.score >= max(ABS_MIN_SCORE, top_score - REL_WINDOW):
-                                good_nodes.append(n)
-
-                if good_nodes:
-                    rag_context = format_context(good_nodes)
-                    sources = extract_sources(good_nodes)
-                    logger.info("Context retrieved successfully.")
-                    if SHOW_CONTEXT and rag_context:
-                        print("\n--- Retrieved Context ---\n")
-                        print(rag_context)
-                        print("\n-------------------------\n")
-                else:
-                    logger.info("No nodes passed the similarity threshold; skipping RAG.")
-            except Exception as e:
-                logger.error("Failed to retrieve context", extra={"error": str(e)})
-                print("\n[Warning] Could not retrieve context. Proceeding without it.\n")
-        elif use_rag_requested:
-            logger.warning(
-                "USE_RAG is set, but RAG components are not available."
-            )
-
-        # Use the unified prompt formatting function for consistency
-        final_prompt = format_prompt(
-            history=[],
-            next_user_message=user_prompt,
-            rag_context=rag_context,
+        # Call the core processing function
+        response_generator, sources = process_query(
+            user_prompt=user_prompt,
+            history=history,
+            use_rag=use_rag_requested,
         )
 
         print("\nModel says:\n")
-        for chunk in stream_llm_response(final_prompt):
+        for chunk in response_generator:
             print(chunk, end="", flush=True)
 
-        # footer with sources
+        # Footer with sources
         if sources:
             print(f"\n\nsources: {', '.join(sorted(sources))}")
         else:
