@@ -87,6 +87,12 @@ class AppConfig(BaseSettings):
         description="Request timeout for the Ollama server in seconds."
     )
 
+    # Feature flags
+    enable_answerability_check: bool = Field(
+        default=True,
+        description="Activate yes/no answerability check before composing the final answer.",
+    )
+
     class Config:
         # Prefix for environment variables, e.g., RAG_SOURCE_DIR
         env_prefix = "RAG_"

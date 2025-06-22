@@ -7,7 +7,7 @@ import logging
 from typing import Set, Generator, Tuple, List, Any
 from config import settings
 from history_utils import format_prompt, History
-from llm_client import stream_llm_response
+from llm_client import stream_llm_response, get_llm_completion
 
 # Optional RAG integration
 try:
@@ -31,6 +31,42 @@ logger = logging.getLogger(__name__)
 ABS_MIN_SCORE = 0.35
 REL_WINDOW = 0.05
 
+# ---------------------------------------------------------------------------
+# answerability gate – a quick yes/no guard before we commit to RAG
+# ---------------------------------------------------------------------------
+ANSWERABILITY_TEMPLATE = """
+You are a decision function. Read the question and the context.
+If the context already contains everything needed for a complete and correct answer,
+reply with "yes". Otherwise reply with "no". Output only "yes" or "no".
+
+<question>
+{question}
+</question>
+
+<context>
+{context}
+</context>
+"""
+
+def context_is_answerable(question: str, context: str,
+                          model: str | None = None) -> bool:
+    """
+    Return True when the supplied context is sufficient to answer the question.
+    """
+    if not context.strip():
+        return False  # no context means not answerable
+    prompt = ANSWERABILITY_TEMPLATE.format(
+        question=question, context=context
+    )
+    try:
+        result = get_llm_completion(prompt, model=model)
+        return result.lower().startswith("y")
+    except Exception:
+        # fail open – if the check crashes, keep the context
+        logger.exception("Answerability check failed, proceeding with context")
+        return True
+
+
 def extract_sources(nodes: List[NodeWithScore]) -> Set[str]:
     """Collects unique file names from retrieved nodes."""
     return {n.metadata.get("file_name", "unknown") for n in nodes}
@@ -51,6 +87,7 @@ def process_query(
     rag_context = ""
     sources: Set[str] = set()
 
+
     if use_rag and RAG_ENABLED:
         logger.info("RAG is enabled; retrieving context...")
         try:
@@ -69,6 +106,16 @@ def process_query(
                 rag_context = format_context(good_nodes)
                 sources = extract_sources(good_nodes)
                 logger.info("Context retrieved successfully.")
+
+                # -----------------------------------------------------------
+                # answerability gate – run *after* we have the context
+                # -----------------------------------------------------------
+                if settings.enable_answerability_check and rag_context:
+                    if not context_is_answerable(user_prompt, rag_context, model=model):
+                        logger.info("Context insufficient – falling back to internal knowledge")
+                        rag_context = ""
+                        sources.clear()  # hide irrelevant citations
+
             else:
                 logger.info("No nodes passed the similarity threshold; skipping RAG.")
 

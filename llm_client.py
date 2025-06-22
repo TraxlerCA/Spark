@@ -87,3 +87,37 @@ def stream_llm_response(prompt: str, model: str | None = None) -> Generator[str,
         ) from e
     except requests.exceptions.RequestException as e:
         raise OllamaClientError("An unexpected request error occurred.") from e
+    
+# ---------------------------------------------------------------------------
+# synchronous helper used for short, non-streaming checks
+# ---------------------------------------------------------------------------
+def get_llm_completion(prompt: str, model: str | None = None) -> str:
+    """
+    Send a single, non-streaming request to the Ollama API and
+    return the plain text response.
+    """
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Prompt must be a non-empty string.")
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        raise ValueError(f"Prompt exceeds max length of {MAX_PROMPT_LENGTH} characters.")
+
+    model_to_use = model or settings.ollama_model
+    url = f"{settings.ollama_host.rstrip('/')}" \
+          f":{settings.ollama_port}/api/generate"
+    payload = {
+        "model": model_to_use,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    logger.info("Non-stream request to Ollama",
+                extra={"url": url, "model": model_to_use})
+
+    try:
+        response = requests.post(url, json=payload,
+                                 timeout=settings.ollama_timeout)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response", "").strip()
+    except requests.exceptions.RequestException as exc:
+        raise OllamaConnectionError(str(exc)) from exc
