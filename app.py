@@ -25,7 +25,8 @@ from history_utils import (
 )
 
 from llm_client import stream_llm_response
-from main import ABS_MIN_SCORE, REL_WINDOW, extract_sources  # Keep these for now
+# Import centralized logging
+from logging_config import setup_logging
 
 # --------------------------------------------------------------------------- #
 # optional RAG integration
@@ -48,23 +49,8 @@ MODEL_OPTIONS: list[str] = ["gemma3:4b", "deepseek-r1:latest"]
 # --------------------------------------------------------------------------- #
 # logger setup
 # --------------------------------------------------------------------------- #
-class JSONFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
-        payload = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload)
+logger = setup_logging()
 
-logger = logging.getLogger(__name__)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(JSONFormatter())
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 # --------------------------------------------------------------------------- #
 # helpers

@@ -25,6 +25,9 @@ from llama_index.core.ingestion import IngestionPipeline # pipeline orchestratio
 from llama_index.core.node_parser import SentenceSplitter # splitter for chunking
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding # embedding model
 from llama_index.vector_stores.chroma import ChromaVectorStore # vector store wrapper
+from config import settings
+from logging_config import setup_logging
+
 
 # Import the centralized configuration
 from config import settings
@@ -32,28 +35,7 @@ from config import settings
 # --------------------------------------------------------------------------- #
 # logger setup
 # --------------------------------------------------------------------------- #
-class JSONFormatter(logging.Formatter):
-    """
-    Custom log formatter that emits events as single-line JSON.
-    Includes timestamp, log level, logger name, message, and exception info.
-    """
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload)
-
-# Create and configure the root logger for this script
-logger = logging.getLogger(__name__)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(JSONFormatter())
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = setup_logging()
 
 # --------------------------------------------------------------------------- #
 # helper functions
@@ -120,8 +102,8 @@ def load_new_docs() -> List[Document]:
     """
     Reads files from the source directory, but intelligently skips any files
     that have already been ingested and have not changed. This is determined
-
-    by comparing file hashes stored in an ingestion log.
+    by comparing file hashes stored in an ingestion log. It now uses
+    relative paths as keys to avoid filename collisions.
     """
     src = settings.source_dir
     if not src.is_dir():
@@ -129,23 +111,28 @@ def load_new_docs() -> List[Document]:
 
     ingestion_log = _load_ingestion_log()
     new_or_updated_files = []
-    current_files = {p.name: p for p in src.rglob("*") if p.is_file()}
 
-    for filename, filepath in current_files.items():
+    # Use relative paths as unique identifiers
+    current_files = {
+        str(p.relative_to(src)): p for p in src.rglob("*") if p.is_file()
+    }
+
+    for rel_path, filepath in current_files.items():
         file_hash = _get_file_hash(filepath)
-        if ingestion_log.get(filename) != file_hash:
-            logger.info(f"Detected new or updated file: '{filename}'")
+        if ingestion_log.get(rel_path) != file_hash:
+            logger.info(f"Detected new or updated file: '{rel_path}'")
             new_or_updated_files.append(str(filepath))
-            ingestion_log[filename] = file_hash
+            ingestion_log[rel_path] = file_hash
 
     if not new_or_updated_files:
         return []
 
     _save_ingestion_log(ingestion_log)
 
+    # The file_metadata lambda now uses the relative path for consistency
     reader = SimpleDirectoryReader(
         input_files=new_or_updated_files,
-        file_metadata=lambda fn: {"file_name": Path(fn).name},
+        file_metadata=lambda fn: {"file_name": str(Path(fn).relative_to(src))},
     )
     return reader.load_data()
 

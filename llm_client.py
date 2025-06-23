@@ -9,11 +9,21 @@ from typing import Any, Dict, Generator
 import requests
 # Import the centralized configuration
 from config import settings
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 # This constant is now sourced from settings, assuming you complete Tier 2 recommendations.
 # For now, we define it here to ensure the client is self-contained.
 MAX_PROMPT_LENGTH = 8_000
+
+def _validate_ollama_url(url: str):
+    """Raises ValueError if the URL is not secure for non-local hosts."""
+    parsed_url = urlparse(url)
+    if parsed_url.hostname not in ("localhost", "127.0.0.1") and parsed_url.scheme != "https":
+        raise ValueError(
+            f"Insecure Ollama URL configured for non-local host: {url}. "
+            "Please use HTTPS."
+        )
 
 # ---------------------------------------------------------------------------
 # custom exceptions
@@ -49,6 +59,7 @@ def stream_llm_response(prompt: str, model: str | None = None) -> Generator[str,
         raise ValueError(f"Prompt exceeds max length of {MAX_PROMPT_LENGTH} chars.")
 
     model_to_use = model or settings.ollama_model
+    _validate_ollama_url(url)
     url = f"{settings.ollama_host.rstrip('/')}:{settings.ollama_port}/api/generate"
     payload = {"model": model_to_use, "prompt": prompt, "stream": True}
 
@@ -104,6 +115,7 @@ def get_llm_completion(prompt: str, model: str | None = None) -> str:
     model_to_use = model or settings.ollama_model
     url = f"{settings.ollama_host.rstrip('/')}" \
           f":{settings.ollama_port}/api/generate"
+    _validate_ollama_url(url)
     payload = {
         "model": model_to_use,
         "prompt": prompt,

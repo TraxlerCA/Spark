@@ -22,6 +22,9 @@ from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.schema import NodeWithScore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
+# Import the centralized configuration and logging
+from config import settings
+from logging_config import setup_logging
 
 # Import the centralized configuration
 from config import settings
@@ -35,24 +38,8 @@ class RetrieverError(Exception):
 # --------------------------------------------------------------------------- #
 # logger setup
 # --------------------------------------------------------------------------- #
-class JSONFormatter(logging.Formatter):
-    """Logging formatter that outputs JSON."""
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "timestamp": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload)
+logger = setup_logging()
 
-logger = logging.getLogger(__name__)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(JSONFormatter())
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 # --------------------------------------------------------------------------- #
 # retriever functions
@@ -132,4 +119,4 @@ def format_context(nodes: List[NodeWithScore]) -> str:
         file_name = node.metadata.get("file_name", "Unknown Source")
         content = " ".join(node.get_content().split())          # tidy up the text
         parts.append(f"Source {idx} (from {file_name}):\n---\n{content}\n---")
-    return "\\n\\n".join(parts)
+    return "\n\n".join(parts)

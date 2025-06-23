@@ -68,12 +68,21 @@ class AppConfig(BaseSettings):
         default=4,
         description="Number of top similar nodes to retrieve from the vector store."
     )
+    abs_min_score: float = Field(
+        default=0.35,
+        description="Absolute minimum similarity score to consider a node relevant."
+    )
+    rel_window: float = Field(
+        default=0.05,
+        description="Keep nodes with scores within this window of the top score."
+    )
 
     # --- Ollama LLM Settings ---
     ollama_host: str = Field(
         default="http://localhost",
-        description="Ollama server host URL."
+        description="Ollama server host URL. Use 'https://' for non-local hosts."
     )
+
     ollama_port: int = Field(
         default=11434,
         description="Ollama server port."

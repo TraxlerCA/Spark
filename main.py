@@ -50,8 +50,6 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 MAX_PROMPT_LENGTH = 8_000
 SHOW_CONTEXT = os.getenv("SHOW_CONTEXT", "0") == "1"
-ABS_MIN_SCORE   = 0.35   # ignore anything below this outright
-REL_WINDOW      = 0.05   # keep chunks that are within this of the top score
 
 # Setup structured JSON logging for the application
 LOGGING_CONFIG: Dict[str, Any] = {
@@ -78,17 +76,6 @@ LOGGING_CONFIG: Dict[str, Any] = {
 }
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# helper functions
-# --------------------------------------------------------------------------- #
-
-def extract_sources(nodes) -> Set[str]:
-    """
-    Collect unique file names from retrieved nodes for the footer.
-    """
-    return {n.metadata.get("file_name", "unknown") for n in nodes}
 
 
 # --------------------------------------------------------------------------- #

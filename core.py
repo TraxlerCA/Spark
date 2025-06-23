@@ -59,9 +59,6 @@ else:
 
 
 logger = logging.getLogger(__name__)
-# Centralized RAG filtering parameters
-ABS_MIN_SCORE = 0.35
-REL_WINDOW = 0.05
 
 # ---------------------------------------------------------------------------
 # answerability gate – a quick yes/no guard before we commit to RAG
@@ -132,14 +129,14 @@ def process_query(
                 top_score = retrieved_nodes[0].score
 
                 # keep the original first-node filter, but be explicit
-                if top_score is not None and top_score >= ABS_MIN_SCORE:
+                if top_score is not None and top_score >= settings.abs_min_score:
                     good_nodes.append(retrieved_nodes[0])
 
                 # decide once which threshold we are going to use
                 relative_cutoff: float = (
-                    top_score - REL_WINDOW if top_score is not None else float("-inf")
+                    top_score - settings.rel_window if top_score is not None else float("-inf")
                 )
-                threshold = max(ABS_MIN_SCORE, relative_cutoff)
+                threshold = max(settings.abs_min_score, relative_cutoff)
 
                 for n in retrieved_nodes[1:]:
                     if n.score is not None and n.score >= threshold:
