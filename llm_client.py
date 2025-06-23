@@ -59,8 +59,8 @@ def stream_llm_response(prompt: str, model: str | None = None) -> Generator[str,
         raise ValueError(f"Prompt exceeds max length of {MAX_PROMPT_LENGTH} chars.")
 
     model_to_use = model or settings.ollama_model
-    _validate_ollama_url(url)
     url = f"{settings.ollama_host.rstrip('/')}:{settings.ollama_port}/api/generate"
+    _validate_ollama_url(url)
     payload = {"model": model_to_use, "prompt": prompt, "stream": True}
 
     logger.info(
