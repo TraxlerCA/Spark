@@ -55,7 +55,6 @@ logger = setup_logging()
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-@st.cache_resource
 def check_vector_store_exists() -> bool:
     if not settings.persist_dir.exists():
         return False

@@ -102,11 +102,12 @@ class AppConfig(BaseSettings):
         description="Activate yes/no answerability check before composing the final answer.",
     )
 
-    class Config:
-        # Prefix for environment variables, e.g., RAG_SOURCE_DIR
-        env_prefix = "RAG_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # pydantic v2 style configuration
+    model_config = {
+        "env_prefix": "RAG_",
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+    }
 
 # --------------------------------------------------------------------------- #
 # global instance
