@@ -3,28 +3,60 @@
 # processing, context retrieval, and response generation.
 
 from __future__ import annotations
+
 import logging
-from typing import Set, Generator, Tuple, List, Any
+from typing import (
+    Any,
+    Generator,
+    Mapping,
+    Protocol,
+    Sequence,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+    List,
+)
+
 from config import settings
 from history_utils import format_prompt, History
 from llm_client import stream_llm_response, get_llm_completion
 
-# Optional RAG integration
+# ---------------------------------------------------------------------------
+# structural protocol used for static checking
+# ---------------------------------------------------------------------------
+class _NodeLike(Protocol):
+    metadata: Mapping[str, Any]
+    score: float | None
+
+
+# ---------------------------------------------------------------------------
+# optional RAG integration
+# ---------------------------------------------------------------------------
 try:
-    from rag.retriever import retrieve, format_context, NodeWithScore
+    from rag.retriever import retrieve as _retrieve, format_context as _format_context
     RAG_ENABLED = True
-except ImportError:
+except ImportError:  # pragma: no cover
     RAG_ENABLED = False
+    _retrieve = _format_context = None  # type: ignore[assignment]
 
-    # fallback stubs – only defined if the import really failed
-    class NodeWithScore:  # type: ignore
-        pass
+if TYPE_CHECKING:
+    from llama_index.core.schema import NodeWithScore as NodeWithScore  # noqa: F401
 
-    def retrieve(*args, **kwargs) -> List[NodeWithScore]:  # type: ignore
-        return []
+    def retrieve(query: str, k: int | None = None) -> Sequence[NodeWithScore]: ...
+    def format_context(nodes: Sequence[NodeWithScore]) -> str: ...
+else:
+    if _retrieve is not None:
+        retrieve = _retrieve  # type: ignore[assignment]
+    else:  # pragma: no cover
+        def retrieve(*args, **kwargs):  # type: ignore[return-value]
+            return []
 
-    def format_context(*args, **kwargs) -> str:  # type: ignore
-        return ""
+    if _format_context is not None:
+        format_context = _format_context  # type: ignore[assignment]
+    else:  # pragma: no cover
+        def format_context(*args, **kwargs):  # type: ignore[return-value]
+            return ""
+
 
 logger = logging.getLogger(__name__)
 # Centralized RAG filtering parameters
@@ -48,16 +80,16 @@ reply with "yes". Otherwise reply with "no". Output only "yes" or "no".
 </context>
 """
 
-def context_is_answerable(question: str, context: str,
-                          model: str | None = None) -> bool:
+
+def context_is_answerable(
+    question: str, context: str, model: str | None = None
+) -> bool:
     """
     Return True when the supplied context is sufficient to answer the question.
     """
     if not context.strip():
         return False  # no context means not answerable
-    prompt = ANSWERABILITY_TEMPLATE.format(
-        question=question, context=context
-    )
+    prompt = ANSWERABILITY_TEMPLATE.format(question=question, context=context)
     try:
         result = get_llm_completion(prompt, model=model)
         return result.lower().startswith("y")
@@ -67,9 +99,10 @@ def context_is_answerable(question: str, context: str,
         return True
 
 
-def extract_sources(nodes: List[NodeWithScore]) -> Set[str]:
+def extract_sources(nodes: Sequence[_NodeLike]) -> Set[str]:
     """Collects unique file names from retrieved nodes."""
     return {n.metadata.get("file_name", "unknown") for n in nodes}
+
 
 def process_query(
     user_prompt: str,
@@ -87,37 +120,50 @@ def process_query(
     rag_context = ""
     sources: Set[str] = set()
 
-
     if use_rag and RAG_ENABLED:
         logger.info("RAG is enabled; retrieving context...")
         try:
-            retrieved_nodes = retrieve(user_prompt, k=settings.similarity_top_k)
+            retrieved_nodes: Sequence[_NodeLike] = retrieve(  # type: ignore
+                user_prompt, k=settings.similarity_top_k
+            )
 
-            good_nodes = []
+            good_nodes: list[_NodeLike] = []
             if retrieved_nodes:
                 top_score = retrieved_nodes[0].score
-                if top_score and top_score >= ABS_MIN_SCORE:
+
+                # keep the original first-node filter, but be explicit
+                if top_score is not None and top_score >= ABS_MIN_SCORE:
                     good_nodes.append(retrieved_nodes[0])
+
+                # decide once which threshold we are going to use
+                relative_cutoff: float = (
+                    top_score - REL_WINDOW if top_score is not None else float("-inf")
+                )
+                threshold = max(ABS_MIN_SCORE, relative_cutoff)
+
                 for n in retrieved_nodes[1:]:
-                    if n.score and n.score >= max(ABS_MIN_SCORE, top_score - REL_WINDOW):
+                    if n.score is not None and n.score >= threshold:
                         good_nodes.append(n)
 
             if good_nodes:
-                rag_context = format_context(good_nodes)
+                rag_context = format_context(good_nodes)  # type: ignore[arg-type]
                 sources = extract_sources(good_nodes)
                 logger.info("Context retrieved successfully.")
 
-                # -----------------------------------------------------------
-                # answerability gate – run *after* we have the context
-                # -----------------------------------------------------------
+                # answerability gate – run after we have the context
                 if settings.enable_answerability_check and rag_context:
-                    if not context_is_answerable(user_prompt, rag_context, model=model):
-                        logger.info("Context insufficient – falling back to internal knowledge")
+                    if not context_is_answerable(
+                        user_prompt, rag_context, model=model
+                    ):
+                        logger.info(
+                            "Context insufficient – falling back to internal knowledge"
+                        )
                         rag_context = ""
                         sources.clear()  # hide irrelevant citations
-
             else:
-                logger.info("No nodes passed the similarity threshold; skipping RAG.")
+                logger.info(
+                    "No nodes passed the similarity threshold; skipping RAG."
+                )
 
         except Exception as e:
             logger.error("Failed to retrieve context", extra={"error": str(e)})

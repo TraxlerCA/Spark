@@ -150,7 +150,7 @@ A: No, everything stays on your machine.
 A: Yes, any Ollama-supported model (e.g., Llama3, DeepSeek, Phi3).
 
 **Q: How do I reset my vector store?**
-A: Run `python ingest.py --reset` to wipe and rebuild.
+A: Run `python -m ingest.py --reset` to wipe and rebuild.
 
 ---
 

@@ -130,9 +130,12 @@ def run_chat() -> None:
     ts_user = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     user_message_content = f"{content}\n\n<sub>{ts_user}</sub>"
 
-    st.session_state[SESSION_KEY_HISTORY].append(
-        ChatMessage(role=ROLE_USER, content=user_message_content)
-    )
+    st.session_state[SESSION_KEY_HISTORY].append({
+        "role": ROLE_USER,
+        "content": user_message_content,
+        # timestamp is optional per TypedDict, so you can omit or include it
+    })
+
     st.chat_message("user").markdown(user_message_content, unsafe_allow_html=True)
 
     # Call the core processing logic
@@ -169,9 +172,10 @@ def run_chat() -> None:
     placeholder.markdown(assistant_message_content, unsafe_allow_html=True)
 
     # Store just the string in history (so it can be JSON-serialized)
-    st.session_state[SESSION_KEY_HISTORY].append(
-        ChatMessage(role=ROLE_ASSISTANT, content=assistant_message_content)
-    )
+    st.session_state[SESSION_KEY_HISTORY].append({
+        "role": ROLE_ASSISTANT,
+        "content": assistant_message_content,
+    })
 
 # --------------------------------------------------------------------------- #
 # entry point

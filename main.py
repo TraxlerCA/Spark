@@ -10,13 +10,14 @@
 # imports
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
+
 import logging
 import logging.config
 import os
 import sys
 import typer
 
-import typer
+from typing import Any, Dict, List, Set, TYPE_CHECKING
 from config import settings
 from llm_client import OllamaClientError   # We only need the exception here
 from core import process_query             # The most important new import
@@ -26,16 +27,22 @@ from core import process_query             # The most important new import
 # --------------------------------------------------------------------------- #
 try:
     # Attempt to import retriever functions
-    from rag.retriever import retrieve, format_context
+    from rag.retriever import retrieve, format_context, NodeWithScore  # noqa: F401
     RAG_ENABLED = True
 except ImportError:
-    # If imports fail, disable RAG functionality
+    # Graceful fallback when rag is not installed
     RAG_ENABLED = False
 
-    def retrieve(*args, **kwargs):  # type: ignore
+    if TYPE_CHECKING:
+        # Used only for static analysis
+        from rag.retriever import NodeWithScore  # pragma: no cover
+    else:
+        NodeWithScore = Any  # type: ignore
+
+    def retrieve(*args, **kwargs):
         return []
 
-    def format_context(*args, **kwargs):  # type: ignore
+    def format_context(nodes: List[NodeWithScore]) -> str:  # type: ignore
         return ""
 
 # --------------------------------------------------------------------------- #
