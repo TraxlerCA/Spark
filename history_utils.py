@@ -10,11 +10,13 @@
 # imports
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
-from typing import TypedDict, List, Optional
+from typing import TypedDict, List, Optional, cast
 
 # --------------------------------------------------------------------------- #
 # constants and type definitions
 # --------------------------------------------------------------------------- #
+# sentinel to detect whether rag_context was provided
+_NO_RAG = object()
 ROLE_SYSTEM = "system"
 ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
@@ -40,7 +42,7 @@ def format_prompt(
     history: History,
     next_user_message: str,
     system_prompt: Optional[str] = None,
-    rag_context: Optional[str] = None,
+    rag_context: Optional[str] = cast(Optional[str], _NO_RAG),
     max_turns: int = DEFAULT_MAX_TURNS,
 ) -> str:
     """
@@ -57,16 +59,30 @@ def format_prompt(
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     parts: list[str] = [f"{ROLE_SYSTEM}: {system_prompt}"]
 
-    # Add recent conversation history, respecting max_turns
-    start_index = max(0, len(history) - max_turns * 2)
-    for msg in history[start_index:]:
+    # detect whether rag_context was explicitly passed
+    provided_rag = (rag_context is not _NO_RAG)
+    use_context = (
+        provided_rag
+        and rag_context
+        and rag_context.strip()
+        and rag_context != "No context found."
+    )
+
+    # truncate or drop history
+    if provided_rag and not use_context:
+        truncated_history: list[ChatMessage] = []
+    else:
+        start_index = max(0, len(history) - max_turns * 2)
+        truncated_history = history[start_index:]
+
+    for msg in truncated_history:
         parts.append(f"{msg['role']}: {msg['content']}")
 
-    # Sanitize the user message by wrapping it in a tag.
+    # sanitize the user message
     safe_user_message = f"<user_question>{next_user_message}</user_question>"
 
-    # Inject RAG context if it's provided and meaningful
-    if rag_context and rag_context.strip() and rag_context != "No context found.":
+    # inject RAG context only when meaningful
+    if use_context:
         instruction = (
             "Use the following context to answer the user's question. "
             "The context is sourced from local documents. "
@@ -79,8 +95,8 @@ def format_prompt(
         )
         parts.append(f"{ROLE_USER}: {combined}")
     else:
-        # If no RAG context, just append the user message
         parts.append(f"{ROLE_USER}: {safe_user_message}")
+
 
     # Final part tells the LLM to begin its response
     parts.append(f"{ROLE_ASSISTANT}:")
